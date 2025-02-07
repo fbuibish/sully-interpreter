@@ -1,5 +1,6 @@
 "use client"
-import { useState, useRef, useEffect } from 'react';
+import sendTextThrouhgPipeline from '@/utils/pipeline';
+import { useState, useRef } from 'react';
 
 export default function Home() {
   const [transcript, setTranscript] = useState<string>('');
@@ -9,43 +10,9 @@ export default function Home() {
   const processorRef = useRef<AudioWorkletNode | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Clean up function for SSE connection
-  useEffect(() => {
-    return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-    };
-  }, []);
-
   const startRecording = async () => {
     try {
       setIsRecording(true);
-      setTranscript(''); // Clear previous transcript
-
-      // Set up SSE first
-      eventSourceRef.current = new EventSource('/api/streamTranscription');
-      
-      eventSourceRef.current.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          console.log('Received transcript:', data);
-          if (data.transcript) {
-            setTranscript(prev => {
-              // Add newline for final transcripts
-              const newText = data.final ? `${data.transcript}\n` : data.transcript;
-              return prev + newText;
-            });
-          }
-        } catch (error) {
-          console.error('Error parsing SSE message:', error);
-        }
-      };
-
-      eventSourceRef.current.onerror = (error) => {
-        console.error('SSE Error:', error);
-        setIsRecording(false);
-      };
 
       // Create AudioContext with 16kHz sample rate
       audioContextRef.current = new AudioContext({ sampleRate: 16000 });
@@ -61,7 +28,7 @@ export default function Home() {
       // Create source node
       sourceNodeRef.current = audioContextRef.current.createMediaStreamSource(stream);
 
-      // Load and create AudioWorklet
+      // Load and create AudioWorklet with matching name
       await audioContextRef.current.audioWorklet.addModule('/audioProcessor.js');
       processorRef.current = new AudioWorkletNode(audioContextRef.current, 'audioProcessor');
 
@@ -73,27 +40,31 @@ export default function Home() {
         );
         
         // Send to our API
-        try {
-          const response = await fetch('/api/streamTranscription', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              audioContent: audioData
-            }),
-          });
-          
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
-        } catch (error) {
-          console.error('Error sending audio data:', error);
-        }
+        await fetch('/api/streamTranscription', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            audioContent: audioData
+          }),
+        });
       };
 
       // Connect nodes
       sourceNodeRef.current.connect(processorRef.current);
+      
+      // Set up SSE for receiving transcripts
+      eventSourceRef.current = new EventSource('/api/streamTranscription');
+      eventSourceRef.current.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log('data', data);
+        if (data.transcript) {
+          const pipelineResult = sendTextThrouhgPipeline(data.transcript, 'en');
+          console.log('pipelineResult', pipelineResult);
+          setTranscript(prev => prev + ' ' + data.transcript);
+        }
+      };
 
     } catch (error) {
       console.error('Error starting recording:', error);
@@ -133,9 +104,7 @@ export default function Home() {
       </div>
       <div className="mt-4">
         <h2 className="text-lg font-bold mb-2">Transcript:</h2>
-        <pre className="whitespace-pre-wrap bg-gray-100 p-4 rounded">
-          {transcript}
-        </pre>
+        <p className="whitespace-pre-wrap">{transcript}</p>
       </div>
     </div>
   );
